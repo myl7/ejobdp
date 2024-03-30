@@ -35,7 +35,7 @@ int main() {
     if (i == 0) {
       dispatcher_job = job;
     } else {
-      workers.emplace_back([job = std::move(job), i]() { gDispatcher.do_job(i, job); });
+      workers.emplace_back([job = std::move(job), i]() { gDispatcher.run_worker(i, job); });
     }
   }
 

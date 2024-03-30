@@ -15,7 +15,7 @@ class Dispatcher {
  public:
   Dispatcher(int worker_num, DispatcherProps props = DispatcherProps()) : kWorkerNum(worker_num), props_(props) {}
 
-  void do_job(int job_id, std::function<void(int)> job) {
+  void run_worker(int worker_id, std::function<void(int)> job) {
     for (size_t i = 1; true; i++) {
       bool exit = false;
       {
@@ -33,7 +33,7 @@ class Dispatcher {
         return;
       }
 
-      job(job_id);
+      job(worker_id);
 
       bool all_done = false;
       {
