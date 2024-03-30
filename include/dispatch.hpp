@@ -7,77 +7,96 @@
 
 namespace ejobdp {
 
-struct WorkerCtx {
-  size_t kWorkerNum;
-  size_t done_num;
-  size_t iter_id = 0;
-  bool exit = false;
+struct DispatcherProps {
+  bool oneshot = false;
 };
 
-extern std::mutex gWorkerMutex;
-extern std::condition_variable gWorkerCv;
-extern WorkerCtx gWorkerCtx;
+class Dispatcher {
+ public:
+  Dispatcher(int worker_num, DispatcherProps props = DispatcherProps()) : kWorkerNum(worker_num), props_(props) {}
 
-static void dispatch_jobs(std::function<void()> setup) {
-  {
-    std::lock_guard lock(gWorkerMutex);
-    gWorkerCtx.iter_id++;
-    setup();
-  }
-  gWorkerCv.notify_all();
-}
+  void do_job(int job_id, std::function<void(int)> job) {
+    for (size_t i = 1; true; i++) {
+      bool exit = false;
+      {
+        std::unique_lock lock(worker_mutex_);
+        worker_cv_.wait(lock, [this, i, &exit]() {
+          if (worker_ctx_.exit) {
+            exit = true;
+            return true;
+          }
+          assert((void("invalid iter_id: should increase step-by-step"), worker_ctx_.iter_id <= i));
+          return worker_ctx_.iter_id == i;
+        });
+      }
+      if (exit) {
+        return;
+      }
 
-static void wait_dispatched_jobs() {
-  {
-    std::unique_lock lock(gWorkerMutex);
-    gWorkerCv.wait(lock, []() {
-      assert((void("invalid done_num: should <= kWorkerNum"), gWorkerCtx.done_num <= gWorkerCtx.kWorkerNum));
-      return gWorkerCtx.done_num == gWorkerCtx.kWorkerNum;
-    });
-  }
+      job(job_id);
 
-  {
-    std::lock_guard lock(gWorkerMutex);
-    gWorkerCtx.done_num = 0;
-  }
-}
-
-static void do_job(std::function<void()> job, bool oneshot = false) {
-  for (size_t i = 1; true; i++) {
-    bool exit = false;
-    {
-      std::unique_lock lock(gWorkerMutex);
-      gWorkerCv.wait(lock, [i, &exit]() {
-        if (gWorkerCtx.exit) {
-          exit = true;
-          return true;
+      bool all_done = false;
+      {
+        std::lock_guard lock(worker_mutex_);
+        worker_ctx_.done_num++;
+        if (worker_ctx_.done_num == kWorkerNum) {
+          all_done = true;
         }
-        assert((void("invalid iter_id: should increase step-by-step"), gWorkerCtx.iter_id <= i));
-        return gWorkerCtx.iter_id == i;
+      }
+      if (all_done) {
+        worker_cv_.notify_all();
+      }
+
+      if (props_.oneshot) {
+        return;
+      }
+    }
+  }
+
+  void dispatch_jobs(std::function<void()> setup) {
+    {
+      std::lock_guard lock(worker_mutex_);
+      worker_ctx_.iter_id++;
+      setup();
+    }
+    worker_cv_.notify_all();
+  }
+
+  void exit() {
+    dispatch_jobs([this]() { worker_ctx_.exit = true; });
+  }
+
+  void wait_dispatched_jobs() {
+    {
+      std::unique_lock lock(worker_mutex_);
+      worker_cv_.wait(lock, [this]() {
+        assert((void("invalid done_num: should <= kWorkerNum"), worker_ctx_.done_num <= kWorkerNum));
+        return worker_ctx_.done_num == kWorkerNum;
       });
     }
 
-    if (exit) {
-      return;
-    }
-    job();
-
-    bool all_done = false;
     {
-      std::lock_guard lock(gWorkerMutex);
-      gWorkerCtx.done_num++;
-      if (gWorkerCtx.done_num == gWorkerCtx.kWorkerNum) {
-        all_done = true;
-      }
-    }
-    if (all_done) {
-      gWorkerCv.notify_all();
-    }
-
-    if (oneshot) {
-      return;
+      std::lock_guard lock(worker_mutex_);
+      worker_ctx_.done_num = 0;
     }
   }
-}
+
+  std::mutex &worker_mutex() {
+    return worker_mutex_;
+  }
+
+ private:
+  int kWorkerNum;
+  DispatcherProps props_;
+
+  struct WorkerCtx {
+    int done_num = 0;
+    size_t iter_id = 0;
+    bool exit = false;
+  };
+  WorkerCtx worker_ctx_;
+  std::mutex worker_mutex_;
+  std::condition_variable worker_cv_;
+};
 
 }  // namespace ejobdp
